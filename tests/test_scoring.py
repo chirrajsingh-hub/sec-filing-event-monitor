@@ -1,42 +1,62 @@
-from secmonitor.events import classify_items
-from secmonitor.scoring import score_filing
+from secmonitor.scoring import MAX_SCORE, MIN_SCORE, score_filing
+
+import pytest
 
 
-def test_score_single_low_weight_item():
-    tags = classify_items(["9.01"])
-    result = score_filing(tags)
-    assert result.score == 1
-    assert result.level == "Informational"
+def test_baseline_score_from_item_code_alone():
+    score = score_filing("2.02")
+    assert score.materiality == 6
+    assert score.urgency == 4
+    assert "baseline" in score.rationale[0].lower() or "2.02" in score.rationale[0]
 
 
-def test_score_restatement_is_critical():
-    tags = classify_items(["4.02"])
-    result = score_filing(tags)
-    assert result.score == 5
-    assert result.level == "Critical"
+def test_bankruptcy_scores_higher_than_earnings():
+    bankruptcy = score_filing("1.03")
+    earnings = score_filing("2.02")
+    assert bankruptcy.materiality > earnings.materiality
+    assert bankruptcy.urgency > earnings.urgency
 
 
-def test_score_stacked_material_items_bumps_score():
-    tags = classify_items(["5.02", "2.03"])  # leadership (3) + debt (3)
-    result = score_filing(tags)
-    assert result.score == 4  # base 3 + stacking bump
-    assert "stacks additional material items" in result.rationale
+def test_keyword_boost_applies_only_to_matching_category():
+    # "ceo" boost is scoped to 5.02; should not fire on an 8.01 filing.
+    with_ceo = score_filing("5.02", headline="Company appoints new Chief Executive Officer")
+    without_ceo = score_filing("5.02", headline="Company appoints new VP of Sales")
+    assert with_ceo.materiality > without_ceo.materiality
+
+    unaffected = score_filing("8.01", headline="mentions Chief Executive Officer in passing")
+    baseline = score_filing("8.01")
+    assert unaffected.materiality == baseline.materiality
 
 
-def test_score_severe_keyword_bumps_score():
-    tags = classify_items(["8.01"])
-    result = score_filing(tags, text="The Company disclosed a material weakness in internal controls.")
-    assert result.score == 3  # base 2 + keyword bump
-    assert "high-severity language" in result.rationale
+def test_going_concern_keyword_boosts_materiality_and_urgency():
+    plain = score_filing("2.06")
+    distressed = score_filing("2.06", snippet="substantial doubt, going concern")
+    assert distressed.materiality > plain.materiality
+    assert distressed.urgency > plain.urgency
 
 
-def test_score_is_capped_at_five():
-    tags = classify_items(["4.02", "1.03"])  # both weight 5
-    result = score_filing(tags, text="going concern bankruptcy chapter 11 restate")
-    assert result.score == 5
+def test_multiple_substantive_items_bump_materiality():
+    single = score_filing("2.02")
+    combined = score_filing("2.02,4.02")
+    assert combined.materiality >= single.materiality
 
 
-def test_score_no_tags_is_informational():
-    result = score_filing([])
-    assert result.score == 1
-    assert result.level == "Informational"
+def test_score_is_clamped_to_valid_range():
+    # Stack every applicable keyword rule to try to push past the ceiling.
+    score = score_filing(
+        "5.02",
+        headline="CEO CFO resign resignation terminated removed",
+        snippet="going concern chapter 11 bankruptcy material weakness restate",
+    )
+    assert MIN_SCORE <= score.materiality <= MAX_SCORE
+    assert MIN_SCORE <= score.urgency <= MAX_SCORE
+
+
+def test_score_filing_raises_on_no_recognized_items():
+    with pytest.raises(ValueError):
+        score_filing("99.99")
+
+
+def test_rationale_text_nonempty():
+    score = score_filing("2.02")
+    assert score.rationale_text()

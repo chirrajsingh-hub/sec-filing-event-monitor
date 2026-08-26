@@ -1,32 +1,48 @@
-from secmonitor.events import classify_items, refine_catchall_category
+from secmonitor.events import ITEM_TAXONOMY, item_categories, normalize_items, primary_category
+
+import pytest
 
 
-def test_classify_items_known_codes():
-    tags = classify_items(["5.02", "9.01"])
-    assert [t.category for t in tags] == ["leadership_change", "exhibits_only"]
-    assert tags[0].weight == 3
-    assert tags[1].weight == 1
+def test_normalize_items_from_comma_string():
+    assert normalize_items("5.02,9.01") == ["5.02", "9.01"]
 
 
-def test_classify_items_unrecognized_code():
-    tags = classify_items(["99.99"])
-    assert tags[0].category == "other"
-    assert "Unrecognized" in tags[0].label
+def test_normalize_items_strips_whitespace():
+    assert normalize_items(" 5.02 , 9.01 ") == ["5.02", "9.01"]
 
 
-def test_classify_items_ignores_blank_entries():
-    tags = classify_items(["5.02", "", "  "])
-    assert len(tags) == 1
+def test_normalize_items_from_list_passthrough():
+    assert normalize_items(["5.02", "9.01"]) == ["5.02", "9.01"]
 
 
-def test_refine_catchall_category_detects_litigation():
-    tags = classify_items(["8.01"])
-    refined = refine_catchall_category(tags, "The Company received a subpoena related to an ongoing SEC inquiry.")
-    assert refined[0].category == "litigation"
-    assert refined[0].weight == 4
+def test_item_categories_skips_unknown_codes():
+    categories = item_categories("5.02,99.99")
+    assert [c.code for c in categories] == ["5.02"]
 
 
-def test_refine_catchall_category_no_match_keeps_original():
-    tags = classify_items(["8.01"])
-    refined = refine_catchall_category(tags, "The Company issued a routine press release about a product launch.")
-    assert refined[0].category == "other_material_event"
+def test_primary_category_prefers_substantive_over_administrative():
+    primary = primary_category("5.02,9.01")
+    assert primary.code == "5.02"
+
+
+def test_primary_category_picks_highest_materiality_among_substantive():
+    # 4.02 (restatement, materiality 9) should win over 2.02 (earnings, materiality 6)
+    primary = primary_category("2.02,4.02")
+    assert primary.code == "4.02"
+
+
+def test_primary_category_falls_back_to_administrative_only_filing():
+    primary = primary_category("9.01")
+    assert primary.code == "9.01"
+
+
+def test_primary_category_raises_on_unknown_only():
+    with pytest.raises(ValueError):
+        primary_category("99.99")
+
+
+def test_taxonomy_scores_in_range():
+    for code, category in ITEM_TAXONOMY.items():
+        assert code == category.code
+        assert 1 <= category.base_materiality <= 10
+        assert 1 <= category.base_urgency <= 10

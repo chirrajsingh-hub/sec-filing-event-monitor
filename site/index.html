@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semiconductor 8-K Monitor — SEC Filing Research Workflow</title>
+<meta name="description" content="An event-driven research workflow that turns raw SEC 8-K filings into a weekly analyst memo: fetch, classify, score, write. Auto-updates weekly against real SEC EDGAR data.">
+<style>
+  :root {
+    --bg: #f4f4f0;
+    --bg-raised: #fbfbf9;
+    --ink: #1c201d;
+    --ink-muted: #61665f;
+    --ink-faint: #969a90;
+    --rule: #e2e3dc;
+    --accent: #96501f;
+    --notable: #93691f;
+    --live: #3f6650;
+
+    --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16191a; --bg-raised: #1d2122; --ink: #e9eae5; --ink-muted: #9ba09a;
+      --ink-faint: #656a64; --rule: #2a2d2b; --accent: #dd9758; --notable: #d8b366; --live: #7bab8c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 46rem; margin: 0 auto; padding: 0 1.5rem; }
+  @media (max-width: 560px) { .wrap { padding: 0 1.1rem; } }
+
+  /* ---------- nav ---------- */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.5rem 0; font-family: var(--font-sans); font-size: 0.82rem;
+  }
+  nav .brand { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; text-decoration: none; }
+  nav .links { display: flex; gap: 1.5rem; }
+  nav a.link {
+    color: var(--ink-muted); text-decoration: none; font-weight: 600;
+    border-bottom: 1px solid transparent;
+  }
+  nav a.link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 3.5rem 0 3rem; }
+  .eyebrow {
+    font-family: var(--font-sans); font-size: 0.7rem; font-weight: 600;
+    letter-spacing: 0.11em; text-transform: uppercase; color: var(--accent); margin: 0 0 1rem;
+  }
+  h1 {
+    font-weight: 500; font-size: clamp(1.8rem, 4.4vw, 2.4rem); line-height: 1.25;
+    letter-spacing: -0.01em; margin: 0 0 1.25rem; text-wrap: balance; max-width: 26ch;
+  }
+  .lede {
+    font-family: var(--font-sans); font-size: 1.05rem; line-height: 1.65;
+    color: var(--ink-muted); max-width: 52ch; margin: 0 0 2rem;
+  }
+  .cta-row { display: flex; gap: 0.9rem; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--font-sans); font-size: 0.85rem; font-weight: 700;
+    text-decoration: none; padding: 0.7rem 1.15rem; border-radius: 4px;
+    display: inline-flex; align-items: center; gap: 0.4rem;
+  }
+  .btn.primary { background: var(--ink); color: var(--bg); }
+  .btn.secondary { border: 1px solid var(--rule); color: var(--ink); }
+  .btn:hover.primary { background: var(--accent); }
+  .btn:hover.secondary { border-color: var(--accent); color: var(--accent); }
+
+  .stat-strip { display: flex; gap: 2.25rem; flex-wrap: wrap; padding-top: 2.25rem; border-top: 1px solid var(--rule); margin-top: 2.5rem; }
+  .stat .n { display: block; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 1.15rem; }
+  .stat .l { display: block; font-family: var(--font-sans); font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.3rem; }
+
+  /* ---------- sections ---------- */
+  section { padding: 4rem 0; border-top: 1px solid var(--rule); }
+  section.hero, section:first-of-type { border-top: none; }
+  h2 { font-weight: 500; font-size: 1.5rem; letter-spacing: -0.005em; margin: 0 0 0.6rem; text-wrap: balance; }
+  .section-sub { font-family: var(--font-sans); font-size: 0.85rem; color: var(--ink-faint); margin: 0 0 2.5rem; max-width: 56ch; }
+
+  /* ---------- pipeline ---------- */
+  .pipeline { display: flex; flex-direction: column; gap: 0; }
+  .step {
+    display: grid; grid-template-columns: 2.5rem 1fr; gap: 1.1rem;
+    padding: 1.5rem 0; border-top: 1px solid var(--rule);
+  }
+  .step:first-child { border-top: none; }
+  .step .n {
+    font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent);
+    padding-top: 0.15rem;
+  }
+  .step h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.4rem; }
+  .step p { font-family: var(--font-sans); font-size: 0.85rem; line-height: 1.65; color: var(--ink-muted); margin: 0; max-width: 56ch; }
+  .step code { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg-raised); border: 1px solid var(--rule); padding: 0.05em 0.4em; border-radius: 3px; }
+
+  /* ---------- memo embed ---------- */
+  .live-badge {
+    display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--font-sans);
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--live); margin-bottom: 0.9rem;
+  }
+  .live-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--live); }
+  .live-badge.stale { color: var(--notable); }
+  .live-badge.stale .dot { background: var(--notable); }
+
+  .events { display: flex; flex-direction: column; gap: 2.25rem; }
+  .event { max-width: 40rem; }
+  .event-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 0.15rem; flex-wrap: wrap; }
+  .event-title { font-weight: 600; font-size: 1.1rem; margin: 0; letter-spacing: -0.005em; }
+  .event-title .ticker { font-family: var(--font-mono); font-weight: 400; font-size: 0.72em; color: var(--ink-faint); margin-left: 0.35em; }
+  .cat-label { flex: none; font-family: var(--font-sans); font-size: 0.66rem; font-weight: 600; letter-spacing: 0.04em; color: var(--tier-color, var(--ink-muted)); white-space: nowrap; }
+  .meta-line { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.72rem; color: var(--ink-faint); margin: 0.3rem 0 0.9rem; }
+  .meta-line .sep { margin: 0 0.5rem; }
+  .analysis { font-family: var(--font-sans); font-size: 0.83rem; line-height: 1.65; color: var(--ink-muted); max-width: 58ch; margin: 0 0 1rem; }
+  .analysis b { color: var(--ink); font-weight: 600; }
+  .meters { display: flex; gap: 1.4rem; margin: 0 0 1rem; }
+  .meter-group { display: flex; align-items: center; gap: 0.5rem; }
+  .meter-label { font-family: var(--font-sans); font-size: 0.62rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
+  .meter { display: flex; gap: 2px; }
+  .meter .tick { width: 4px; height: 9px; border-radius: 1px; background: var(--rule); }
+  .meter .tick.on { background: var(--tier-color, var(--accent)); }
+  .meter-value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.7rem; color: var(--ink-faint); }
+  .footline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.6rem; font-family: var(--font-sans); font-size: 0.72rem; }
+  .footline .rationale { color: var(--ink-faint); }
+  .footline .divider { color: var(--rule); }
+  .footline a { color: var(--accent); font-weight: 600; text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .footline a:hover { border-bottom-color: var(--accent); }
+  .footline .acc { color: var(--ink-faint); font-family: var(--font-mono); }
+
+  .row-table { border-top: 1px solid var(--rule); margin-top: 2rem; }
+  .row { display: flex; align-items: baseline; gap: 0.9rem; padding: 0.6rem 0; border-bottom: 1px solid var(--rule); }
+  .row .who { flex: none; width: 8rem; font-weight: 600; font-size: 0.85rem; }
+  .row .who .t { font-family: var(--font-mono); font-weight: 400; font-size: 0.78em; color: var(--ink-faint); }
+  .row .what { flex: 1 1 auto; font-family: var(--font-sans); font-size: 0.8rem; color: var(--ink-muted); }
+  .row .what a { color: inherit; border-bottom: 1px solid var(--rule); text-decoration: none; }
+  .row .what a:hover { border-bottom-color: var(--accent); color: var(--accent); }
+  .row .scores { flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.74rem; color: var(--ink-faint); }
+  @media (max-width: 560px) { .row { flex-wrap: wrap; } .row .who { width: auto; } .row .scores { order: 3; width: 100%; padding-left: 0.85rem; } }
+
+  /* ---------- news ---------- */
+  .news-list { display: flex; flex-direction: column; gap: 1.25rem; }
+  .news-item { font-family: var(--font-sans); font-size: 0.85rem; line-height: 1.6; padding-bottom: 1.25rem; border-bottom: 1px solid var(--rule); }
+  .news-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .news-item a.title { font-weight: 700; color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); }
+  .news-item a.title:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  .news-meta { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-faint); margin: 0.2rem 0 0.4rem; }
+
+  /* ---------- methodology / limitations ---------- */
+  .methodology p { font-family: var(--font-sans); font-size: 0.85rem; line-height: 1.75; color: var(--ink-muted); margin: 0 0 1.35rem; max-width: 58ch; }
+  .methodology p:last-child { margin-bottom: 0; }
+  .methodology b { color: var(--ink); font-weight: 600; }
+  .methodology code { font-family: var(--font-mono); font-size: 0.9em; color: var(--ink); background: var(--bg-raised); border: 1px solid var(--rule); padding: 0.05em 0.4em; border-radius: 3px; }
+
+  /* ---------- stack ---------- */
+  .stack-list { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+  .stack-chip {
+    font-family: var(--font-sans); font-size: 0.76rem; font-weight: 600; color: var(--ink-muted);
+    border: 1px solid var(--rule); border-radius: 999px; padding: 0.35rem 0.85rem;
+  }
+
+  .empty-state {
+    font-family: var(--font-sans); font-size: 0.85rem; color: var(--ink-faint);
+    border: 1px dashed var(--rule); border-radius: 6px; padding: 1.5rem;
+  }
+
+  footer {
+    padding: 3rem 0; border-top: 1px solid var(--rule);
+    font-family: var(--font-sans); font-size: 0.76rem; color: var(--ink-faint);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+  }
+  footer a { color: var(--ink-muted); text-decoration: none; font-weight: 600; }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="wrap">
+  <a class="brand" href="#top">Semiconductor 8-K Monitor</a>
+  <div class="links">
+    <a class="link" href="#memo">This week's memo</a>
+    <a class="link" href="#how">How it works</a>
+    <a class="link" href="https://github.com/chirrajsingh-hub/sec-filing-event-monitor" target="_blank" rel="noopener">Source</a>
+  </div>
+</nav>
+
+<section class="hero wrap" id="top">
+  <p class="eyebrow">Event-driven research workflow</p>
+  <h1 id="hero-heading">Raw SEC filings, turned into a weekly analyst memo.</h1>
+  <p class="lede">
+    Every week, an automated job pulls the material 8-K filings from 30
+    semiconductor companies straight from SEC EDGAR, classifies each one by
+    disclosed event type, scores it for materiality and urgency against a
+    documented rubric, and writes the result up the way an analyst covering
+    the sector would — sourced back to the original filing. Not a
+    dashboard. A repeatable, self-updating process.
+  </p>
+  <div class="cta-row">
+    <a class="btn primary" href="#memo">Read this week's memo ↓</a>
+    <a class="btn secondary" href="https://github.com/chirrajsingh-hub/sec-filing-event-monitor" target="_blank" rel="noopener">View source on GitHub</a>
+  </div>
+  <div class="stat-strip" id="hero-stats"></div>
+</section>
+
+<section class="wrap" id="how">
+  <h2>How it works</h2>
+  <p class="section-sub">Four stages, each its own module, each independently tested — plus a scheduled job that reruns the whole thing weekly.</p>
+  <div class="pipeline">
+    <div class="step">
+      <div class="n">01</div>
+      <div><h3>Fetch</h3><p>Pull every recent 8-K for the tracked universe directly from SEC EDGAR's public submissions API — no scraping, the SEC's own structured data. <code>edgar_client.py</code></p></div>
+    </div>
+    <div class="step">
+      <div class="n">02</div>
+      <div><h3>Classify</h3><p>Every 8-K discloses which numbered "Item" it covers — <code>5.02</code> is a leadership change, <code>4.02</code> is a restatement, <code>1.05</code> is a cybersecurity incident. That mapping is built directly into the filing, so classification needs no guessing. <code>events.py</code></p></div>
+    </div>
+    <div class="step">
+      <div class="n">03</div>
+      <div><h3>Score</h3><p>Each event category has a documented materiality/urgency baseline (1–10), adjusted by a small, transparent set of keyword rules. Every score carries a written rationale — nothing is a black box. <code>scoring.py</code></p></div>
+    </div>
+    <div class="step">
+      <div class="n">04</div>
+      <div><h3>Write &amp; republish</h3><p>Assembles everything into this page. A GitHub Actions job reruns steps 1–4 every week against live EDGAR data and redeploys automatically — what you're reading was generated by code, not updated by hand. <code>.github/workflows/weekly-secmonitor-update.yml</code></p></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="memo">
+  <p class="live-badge" id="live-badge"><span class="dot"></span><span id="live-badge-text">Loading…</span></p>
+  <h2>This week's memo</h2>
+  <p class="section-sub">A real, unedited run of the pipeline against the actual semiconductor universe. Nothing below is invented — every link opens the real filing on sec.gov.</p>
+
+  <div style="font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--ink-faint); margin-bottom: 2.5rem;" id="coverage-line"></div>
+
+  <div id="memo-content"></div>
+</section>
+
+<section class="wrap" id="news-section" style="display:none;">
+  <h2>This week in sector news</h2>
+  <p class="section-sub">Real news via Alpha Vantage — an independent source, not matched to the filings above.</p>
+  <div class="news-list" id="news-list"></div>
+</section>
+
+<section class="methodology wrap">
+  <h2>Methodology &amp; honest limitations</h2>
+  <p><b>Classification.</b> Each 8-K's disclosed Item codes map directly to an event category — a filing with multiple items is headlined by its most material substantive item.</p>
+  <p><b>Scoring.</b> Materiality and urgency start from a per-category baseline, adjusted by documented keyword rules (e.g. "material weakness" on a restatement, "CEO"/"CFO" on a leadership change). Every score ships with its rationale.</p>
+  <p><b>What this run doesn't do yet.</b> Live filings are scored from the item-code baseline alone — the pipeline doesn't fetch and read filing text yet, so nothing here is keyword-boosted. The "why it matters" / "watch next" text is templated per category, not bespoke analysis of each company. <code>Item 8.01</code> is a catch-all spanning routine press releases to major litigation, scored conservatively for that reason. Every score is a triage signal, not a verdict — read the linked filing.</p>
+</section>
+
+<section class="wrap">
+  <h2>Stack</h2>
+  <p class="section-sub">Pure Python, no framework, no database — a pipeline, not a service. Kept fresh by a weekly scheduled job, not a person.</p>
+  <div class="stack-list">
+    <span class="stack-chip">Python 3.10+</span>
+    <span class="stack-chip">SEC EDGAR submissions API</span>
+    <span class="stack-chip">Alpha Vantage news API</span>
+    <span class="stack-chip">pandas</span>
+    <span class="stack-chip">pytest — 95 tests</span>
+    <span class="stack-chip">GitHub Actions (weekly cron)</span>
+    <span class="stack-chip">Vercel</span>
+  </div>
+</section>
+
+<footer class="wrap">
+  <span id="footer-note">Auto-updated weekly by a scheduled GitHub Actions job.</span>
+  <a href="https://github.com/chirrajsingh-hub/sec-filing-event-monitor" target="_blank" rel="noopener">Source on GitHub →</a>
+</footer>
+
+<script src="data.js"></script>
+<script>
+  const CATEGORY_COMMENTARY = {
+    "Material Agreement": {
+      why: "A new material agreement can change the revenue mix, cost structure, or competitive position — direction depends on whether this is a growth bet or a defensive one.",
+      watch: "Deal size relative to market cap, financing structure, and any termination fee that signals how committed both sides are.",
+    },
+    "Earnings / Results of Operations": {
+      why: "Earnings results and forward guidance are usually the single biggest near-term driver of the stock.",
+      watch: "Guidance direction relative to consensus, not just the reported quarter.",
+    },
+    "Other Material Events": {
+      why: "The Item 8.01 catch-all spans everything from a routine press release to major litigation — materiality varies enormously.",
+      watch: "Read the actual text; this item's base score is deliberately conservative.",
+    },
+    "Shareholder Vote Results": {
+      why: "Annual-meeting vote results are mostly routine, but a surprisingly low approval margin is a real signal of shareholder dissatisfaction.",
+      watch: "Vote margins, not just outcomes.",
+    },
+    "Leadership Change": {
+      why: "Leadership changes at the CEO/CFO level can signal a strategy shift, and abrupt departures often precede other bad news.",
+      watch: "Planned succession vs. abrupt exit, and whether other executives depart soon after.",
+    },
+    "M&A Completion": {
+      why: "A completed acquisition directly changes the asset base, and the price paid sets the bar the deal has to clear to be accretive.",
+      watch: "Purchase price vs. the target's revenue/EBITDA, financing mix, and integration risk.",
+    },
+    "Debt Financing": {
+      why: "New debt changes leverage and interest expense; use of proceeds signals growth bet vs. liquidity need.",
+      watch: "Coupon relative to existing debt, covenants, and use of proceeds.",
+    },
+    "Restatement / Non-Reliance": {
+      why: "Non-reliance on prior financials means the numbers the market was pricing the stock on were wrong — one of the highest-signal disclosures in the whole taxonomy.",
+      watch: "Which periods and line items are affected, and whether it points to a broader controls problem.",
+    },
+    "Cybersecurity Incident": {
+      why: "A material cybersecurity incident carries direct remediation cost, potential liability, and reputational risk.",
+      watch: "Scope of data/systems affected and any follow-on regulatory exposure.",
+    },
+    "Material Impairment": {
+      why: "An impairment is a lagging admission that a past investment's economics deteriorated.",
+      watch: "Which reporting unit was written down and whether it maps to a business the company still relies on.",
+    },
+    "Auditor Change": {
+      why: "An unscheduled dismissal (vs. a planned rotation) is a governance flag worth a second look.",
+      watch: "Whether the filing discloses any disagreement on accounting matters.",
+    },
+    "Restructuring": {
+      why: "Restructuring trades near-term cash cost for a leaner cost base — depends on whether cuts hit growth capacity or slack.",
+      watch: "Cash vs. non-cash portion of the charge and what capacity is being removed.",
+    },
+    "Unregistered Equity Sale": {
+      why: "Usually small relative to float, but a dilution data point worth tracking cumulatively.",
+      watch: "Size of the issuance relative to shares outstanding.",
+    },
+  };
+  const DEFAULT_COMMENTARY = { why: "See the linked filing for details.", watch: "See the linked filing for details." };
+
+  function fmtDate(iso) {
+    const d = new Date(iso + "T00:00:00Z");
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  }
+
+  function renderEmpty(container, message) {
+    container.innerHTML = `<div class="empty-state">${message}</div>`;
+  }
+
+  const data = window.SECMONITOR_DATA;
+
+  if (!data) {
+    renderEmpty(document.getElementById("memo-content"),
+      "No data file found. This page expects site/data.js, generated by scripts/generate_site_data.py.");
+    document.getElementById("live-badge-text").textContent = "No data loaded";
+  } else {
+    const EVENTS = data.events || [];
+    const generated = new Date(data.generated_at);
+    const ageDays = (Date.now() - generated.getTime()) / 86400000;
+    const badge = document.getElementById("live-badge");
+    const badgeText = document.getElementById("live-badge-text");
+    if (ageDays > 10) {
+      badge.classList.add("stale");
+      badgeText.textContent = `Live EDGAR data — last updated ${generated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} (over a week old; the weekly job may be paused)`;
+    } else {
+      badgeText.textContent = `Live EDGAR data — last updated ${generated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+    }
+
+    document.getElementById("coverage-line").textContent =
+      `Coverage window ${fmtDate(data.coverage_start)}–${fmtDate(data.coverage_end)} · ${data.universe_size} tracked · ${data.filings_count} filed · ${data.silent_count} silent`;
+
+    document.getElementById("hero-stats").innerHTML = `
+      <div class="stat"><span class="n">${data.universe_size}</span><span class="l">Companies tracked</span></div>
+      <div class="stat"><span class="n">${data.filings_count}</span><span class="l">Filings this run</span></div>
+      <div class="stat"><span class="n">95</span><span class="l">Automated tests</span></div>
+      <div class="stat"><span class="n">100%</span><span class="l">Real EDGAR data</span></div>`;
+
+    document.getElementById("hero-heading").textContent = EVENTS.length
+      ? `${data.filings_count} filings across ${data.companies_with_events} companies this week.`
+      : "No material filings this week — the pipeline is watching.";
+
+    if (EVENTS.length === 0) {
+      renderEmpty(document.getElementById("memo-content"),
+        "No 8-K filings matched the coverage window for this universe this run. That's a real result, not an error — check back next week.");
+    } else {
+      const maxMateriality = Math.max(...EVENTS.map(e => e.materiality));
+      const highlights = EVENTS.filter(e => e.materiality === maxMateriality);
+      const rest = EVENTS.filter(e => e.materiality !== maxMateriality);
+
+      function tierFor(m) { return m === maxMateriality ? "notable" : null; }
+
+      function meterHTML(score, tier) {
+        let ticks = "";
+        for (let i = 1; i <= 10; i++) ticks += `<span class="tick${i <= score ? " on" : ""}"></span>`;
+        const style = tier ? ` style="--tier-color: var(--${tier})"` : "";
+        return `<div class="meter"${style}>${ticks}</div>`;
+      }
+
+      function eventCard(e) {
+        const tier = tierFor(e.materiality);
+        const tierStyle = tier ? ` style="--tier-color: var(--${tier})"` : "";
+        const itemsStr = e.items.map(c => "Item " + c).join(", ");
+        const c = CATEGORY_COMMENTARY[e.category] || DEFAULT_COMMENTARY;
+        return `
+          <article class="event">
+            <div class="event-head">
+              <h4 class="event-title" style="margin:0;">${e.company}<span class="ticker">${e.ticker}</span></h4>
+              <span class="cat-label"${tierStyle}>${e.category}</span>
+            </div>
+            <p class="meta-line">${e.filed}<span class="sep">·</span>${itemsStr}</p>
+            <p class="analysis"><b>Why it matters.</b> ${c.why} <b>Watch next.</b> ${c.watch}</p>
+            <div class="meters">
+              <div class="meter-group"><span class="meter-label">Materiality</span>${meterHTML(e.materiality, tier)}<span class="meter-value">${e.materiality}/10</span></div>
+              <div class="meter-group"><span class="meter-label">Urgency</span>${meterHTML(e.urgency, tier)}<span class="meter-value">${e.urgency}/10</span></div>
+            </div>
+            <p class="footline">
+              <span class="rationale">${e.rationale}</span>
+              <span class="divider">·</span>
+              <a href="${e.url}" target="_blank" rel="noopener">EDGAR filing</a>
+              <span class="acc">${e.accession}</span>
+            </p>
+          </article>`;
+      }
+
+      let html = `<h3 style="font-family: var(--font-sans); font-weight: 700; font-size: 0.7rem; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 0 0 1.5rem;">Highest scored this run <span style="font-weight:400;">— materiality ${maxMateriality}, the ceiling this run</span></h3><div class="events">${highlights.map(eventCard).join("")}</div>`;
+
+      const byCat = {};
+      rest.forEach(e => { (byCat[e.category] ||= []).push(e); });
+      const catOrder = Object.keys(byCat).sort((a, b) => Math.max(...byCat[b].map(e => e.materiality)) - Math.max(...byCat[a].map(e => e.materiality)));
+
+      let rowsHTML = "";
+      catOrder.forEach(cat => {
+        const list = byCat[cat].sort((a, b) => a.filed.localeCompare(b.filed));
+        rowsHTML += `<h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 2.2rem 0 0.2rem;">${cat} <span style="font-weight:400;">${list.length}</span></h3>`;
+        rowsHTML += list.map(e => `
+          <div class="row">
+            <div class="who">${e.ticker} <span class="t">${e.filed.slice(5)}</span></div>
+            <div class="what"><a href="${e.url}" target="_blank" rel="noopener">${e.items.map(c => "Item " + c).join(", ")} filing ↗</a></div>
+            <div class="scores">${e.materiality}/${e.urgency}</div>
+          </div>`).join("");
+      });
+      if (rest.length) html += `<div class="row-table">${rowsHTML}</div>`;
+
+      document.getElementById("memo-content").innerHTML = html;
+    }
+
+    const NEWS = data.news || [];
+    if (NEWS.length) {
+      document.getElementById("news-section").style.display = "";
+      document.getElementById("news-list").innerHTML = NEWS.map(n => `
+        <div class="news-item">
+          <a class="title" href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
+          <div class="news-meta">${n.source} · ${new Date(n.published).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${n.tickers.join(", ") || "sector-wide"} · ${n.sentiment}</div>
+        </div>`).join("");
+    }
+  }
+</script>
+
+</body>
+</html>

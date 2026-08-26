@@ -1,96 +1,88 @@
+"""Command-line entry point: `python -m secmonitor.cli [options]`.
+
+Runs the pipeline and writes both the rendered memo (Markdown) and the
+underlying structured events (CSV) to an output directory, then prints a
+short summary to stdout.
+"""
+
 from __future__ import annotations
 
 import argparse
-import sys
-from datetime import date, timedelta
+import os
+from datetime import date
 from pathlib import Path
 
-from secmonitor.config import Settings, load_companies
-from secmonitor.memo import render_weekly_memo
-from secmonitor.pipeline import run_pipeline
-from secmonitor.storage import EventStore
+from secmonitor.pipeline import MODE_LIVE, MODE_OFFLINE, run_pipeline
+from secmonitor.universe import DEFAULT_SECTOR
+
+ALPHA_VANTAGE_ENV_VAR = "ALPHAVANTAGE_API_KEY"
 
 
-def _parse_date(s: str) -> date:
-    return date.fromisoformat(s)
-
-
-def cmd_fetch(args: argparse.Namespace) -> int:
-    settings = Settings.from_env()
-    until = args.until or date.today()
-    since = args.since or (until - timedelta(days=settings.lookback_days))
-
-    events = run_pipeline(settings, since=since, until=until, skip_seen=not args.force)
-    print(f"Fetched {len(events)} new 8-K event(s) between {since} and {until}.")
-    for event in events:
-        print(f"  {event.filing.filing_date} {event.filing.company.ticker:>6}  "
-              f"[{event.materiality.level:>13}]  {event.primary_category}")
-    return 0
-
-
-def cmd_memo(args: argparse.Namespace) -> int:
-    settings = Settings.from_env()
-    until = args.until or date.today()
-    since = args.since or (until - timedelta(days=settings.lookback_days))
-
-    store = EventStore(settings.data_dir / "secmonitor.db")
-
-    if args.refresh:
-        run_pipeline(settings, since=since, until=until, store=store, skip_seen=True)
-
-    events = store.load_range(since, until)
-    companies = load_companies()
-    sector = companies[0].sector if companies else ""
-    memo_text = render_weekly_memo(events, since, until, sector=sector)
-
-    if args.output:
-        Path(args.output).write_text(memo_text)
-        print(f"Wrote memo ({len(events)} events) to {args.output}")
-    else:
-        print(memo_text)
-    return 0
-
-
-def cmd_list_companies(args: argparse.Namespace) -> int:
-    companies = load_companies()
-    print(f"Tracked universe: {len(companies)} companies ({companies[0].sector if companies else 'n/a'})")
-    for c in companies:
-        print(f"  {c.ticker:>6}  {c.name}")
-    return 0
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="secmonitor", description="SEC 8-K event monitor")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_fetch = sub.add_parser("fetch", help="Pull and score new 8-K filings for the tracked universe")
-    p_fetch.add_argument("--since", type=_parse_date, default=None)
-    p_fetch.add_argument("--until", type=_parse_date, default=None)
-    p_fetch.add_argument("--force", action="store_true", help="Re-process filings already seen")
-    p_fetch.set_defaults(func=cmd_fetch)
-
-    p_memo = sub.add_parser("memo", help="Render a weekly memo from cached (or freshly fetched) events")
-    p_memo.add_argument("--since", type=_parse_date, default=None)
-    p_memo.add_argument("--until", type=_parse_date, default=None)
-    p_memo.add_argument("--refresh", action="store_true", help="Fetch new filings before rendering")
-    p_memo.add_argument("--output", type=str, default=None, help="Write memo to this path instead of stdout")
-    p_memo.set_defaults(func=cmd_memo)
-
-    p_list = sub.add_parser("list-companies", help="Print the tracked company universe")
-    p_list.set_defaults(func=cmd_list_companies)
-
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode", choices=[MODE_OFFLINE, MODE_LIVE], default=MODE_OFFLINE,
+        help="offline (default): synthetic fixture data, no network needed. "
+             "live: real EDGAR data, requires network access and --contact-email.",
+    )
+    parser.add_argument(
+        "--weeks-back", type=int, default=1,
+        help="How many weeks of filings to pull, ending today (default: 1).",
+    )
+    parser.add_argument(
+        "--contact-email", default=None,
+        help="Required for --mode live: identifies this tool in the SEC "
+             "User-Agent header per SEC's fair-access policy.",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("examples/output"),
+        help="Directory to write the memo and events CSV into (default: examples/output).",
+    )
+    parser.add_argument(
+        "--alpha-vantage-key", default=os.environ.get(ALPHA_VANTAGE_ENV_VAR),
+        help="Optional: adds a real 'This week in sector news' section from Alpha "
+             "Vantage's NEWS_SENTIMENT feed, independent of EDGAR/--mode. Get a free "
+             f"key at https://www.alphavantage.co/support/#api-key. Defaults to the "
+             f"{ALPHA_VANTAGE_ENV_VAR} environment variable if set.",
+    )
     return parser
 
 
-def main(argv=None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        return args.func(args)
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+
+    result = run_pipeline(
+        sector=DEFAULT_SECTOR,
+        mode=args.mode,
+        weeks_back=args.weeks_back,
+        contact_email=args.contact_email,
+        alpha_vantage_key=args.alpha_vantage_key,
+    )
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = date.today().isoformat()
+    memo_path = args.output_dir / f"secmonitor_memo_{stamp}_{args.mode}.md"
+    csv_path = args.output_dir / f"secmonitor_events_{stamp}_{args.mode}.csv"
+
+    memo_path.write_text(result.render_memo())
+    result.to_dataframe().to_csv(csv_path, index=False)
+
+    print(f"Mode: {result.mode}")
+    print(f"Coverage: {result.week_start} to {result.week_end}")
+    print(f"Universe: {len(result.sector.tickers)} companies")
+    print(f"Filings captured: {len(result.events)}")
+    if result.warnings:
+        print(f"Warnings: {len(result.warnings)} (see stderr above)")
+    if args.alpha_vantage_key:
+        print(f"News items: {len(result.news)}")
+        if result.news_warnings:
+            print(f"News warnings: {len(result.news_warnings)} (see stderr above)")
+    else:
+        print("News: skipped (no --alpha-vantage-key / ALPHAVANTAGE_API_KEY set)")
+    print(f"Memo written to: {memo_path}")
+    print(f"Events CSV written to: {csv_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
