@@ -33,6 +33,8 @@ def build_payload() -> dict:
     if not contact_email:
         raise SystemExit("SEC_CONTACT_EMAIL environment variable is required")
     alpha_vantage_key = os.environ.get("ALPHA_VANTAGE_API_KEY") or None
+    print(f"Alpha Vantage key provided: {alpha_vantage_key is not None} "
+          f"(length {len(alpha_vantage_key) if alpha_vantage_key else 0})")
 
     result = run_pipeline(
         mode=MODE_LIVE, contact_email=contact_email, alpha_vantage_key=alpha_vantage_key,
