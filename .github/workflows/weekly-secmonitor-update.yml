@@ -35,5 +35,14 @@ jobs:
           git config user.name "secmonitor-bot"
           git config user.email "actions@users.noreply.github.com"
           git add site/data.js
-          git diff --cached --quiet && echo "No changes this run." || git commit -m "Weekly SEC filing data refresh"
+          if git diff --cached --quiet; then
+            echo "No changes this run."
+            exit 0
+          fi
+          git commit -m "Weekly SEC filing data refresh"
+          # Rebase onto whatever is currently on the branch before pushing --
+          # protects against a re-run (or a second run overlapping this one)
+          # starting from a base commit the branch has since moved past.
+          git fetch origin main
+          git rebase origin/main
           git push
